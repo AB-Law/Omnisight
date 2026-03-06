@@ -1,0 +1,37 @@
+# Core API
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-dotenv
+
+# Database
+sqlalchemy
+psycopg2-binary
+alembic
+
+# AI & Cache
+openai
+pinecone
+
+# Messaging
+google-cloud-pubsub
+
+# Market Data
+yfinance
+twelvedata
+scipy
+
+# Scrapers
+praw
+feedparser
+
+# Frontend & UI
+streamlit
+pandas
+plotly
+fpdf2
+
+# Testing
+pytest
+httpx

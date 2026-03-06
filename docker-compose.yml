@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: omnisight-db
+    environment:
+      POSTGRES_DB: omnisight_local
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  pubsub-emulator:
+    image: google/cloud-sdk:latest
+    container_name: omnisight-pubsub
+    command: gcloud beta emulators pubsub start --host-port=0.0.0.0:8085
+    ports:
+      - "8085:8085"
+
+  intelligence-api:
+    build: 
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: omnisight-api
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgresql://dev:dev_password@db:5432/omnisight_local
+      - PUBSUB_EMULATOR_HOST=pubsub-emulator:8085
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - PINECONE_API_KEY=${PINECONE_API_KEY}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - pubsub-emulator
+
+volumes:
+  postgres_data:
