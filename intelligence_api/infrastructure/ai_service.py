@@ -22,7 +22,15 @@ class SemanticCache:
                 include_metadata=True
             )
             if results.matches and results.matches[0].score >= threshold:
-                return results.matches[0].metadata
+                metadata = dict(results.matches[0].metadata)
+                # De-serialize mentioned_entities if present
+                if "mentioned_entities" in metadata and isinstance(metadata["mentioned_entities"], str):
+                    import json
+                    try:
+                        metadata["mentioned_entities"] = json.loads(metadata["mentioned_entities"])
+                    except:
+                        pass
+                return metadata
         except Exception as e:
             print(f"Cache query error: {e}")
         return None
@@ -30,8 +38,14 @@ class SemanticCache:
     def store(self, text: str, embedding: List[float], metadata: Dict[str, Any]):
         """Stores analysis result in Pinecone."""
         doc_id = self._generate_id(text)
+        # Serialize mentioned_entities for Pinecone (doesn't support nested lists of dicts)
+        clean_metadata = dict(metadata)
+        if "mentioned_entities" in clean_metadata and not isinstance(clean_metadata["mentioned_entities"], str):
+            import json
+            clean_metadata["mentioned_entities"] = json.dumps(clean_metadata["mentioned_entities"])
+            
         try:
-            self.index.upsert(vectors=[(doc_id, embedding, metadata)])
+            self.index.upsert(vectors=[(doc_id, embedding, clean_metadata)])
         except Exception as e:
             print(f"Cache storage error: {e}")
 
@@ -72,7 +86,7 @@ class AIClient:
             raise
 
     def analyze_content(self, text: str) -> Dict[str, Any]:
-        """Performs sentiment analysis, categorization, and entity enrichment."""
+        """Performs sentiment analysis, categorization, entity enrichment, and NER extraction."""
         prompt = f"""
         Analyze the following text for an OSINT platform focused on Market Intelligence.
         
@@ -85,11 +99,16 @@ class AIClient:
         3. **Category**: A relevance categorization (e.g., 'Financial Move', 'Product Launch', 'Legal/Regulatory', 'Market Rumor', 'Partnership Update').
         4. **Sector**: The industry sector of the primary company/entity mentioned (e.g., 'Technology', 'Finance', 'Energy', etc.).
         5. **Entity Description**: A brief 1-sentence description of the primary company mentioned.
+        6. **Mentioned Entities**: Extract ALL named entities from the text. For each entity provide:
+           - name: The entity's canonical name (e.g. "Elon Musk", not "he" or "the CEO")
+           - type: One of PERSON, COMPANY, ORG, LOCATION, PRODUCT, or TOPIC
+           Include companies, people, government bodies, products, locations, and themes (like "AI Regulation", "Interest Rates").
+           Limit to the 10 most relevant. Return an empty list if none found.
         
         Text: {text}
         
         Return JSON ONLY in this format:
-        {{"sentiment": 0.5, "summary": "...", "category": "...", "sector": "Technology", "entity_description": "..."}}
+        {{"sentiment": 0.5, "summary": "...", "category": "...", "sector": "Technology", "entity_description": "...", "mentioned_entities": [{{"name": "Tesla", "type": "COMPANY"}}, {{"name": "Elon Musk", "type": "PERSON"}}]}}
         """
         
         response = self.client.chat.completions.create(

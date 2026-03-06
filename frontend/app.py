@@ -145,10 +145,11 @@ st.markdown("---")
 st.sidebar.header("🧭 Navigation")
 nav_mode = st.sidebar.radio(
     "Select View", 
-    ["Topic Analysis", "Company Intelligence", "People Watch"],
-    index=["Topic Analysis", "Company Intelligence", "People Watch"].index(
+    ["Topic Analysis", "Company Intelligence", "People Watch", "Knowledge Graph"],
+    index=["Topic Analysis", "Company Intelligence", "People Watch", "Knowledge Graph"].index(
         "Topic Analysis" if st.session_state["view_mode"] == "Topic" else 
         "Company Intelligence" if st.session_state["view_mode"] == "Company" else 
+        "Knowledge Graph" if st.session_state["view_mode"] == "Graph" else
         "People Watch"
     )
 )
@@ -156,6 +157,7 @@ nav_mode = st.sidebar.radio(
 if nav_mode == "Topic Analysis": st.session_state["view_mode"] = "Topic"
 elif nav_mode == "Company Intelligence": st.session_state["view_mode"] = "Company"
 elif nav_mode == "People Watch": st.session_state["view_mode"] = "People"
+elif nav_mode == "Knowledge Graph": st.session_state["view_mode"] = "Graph"
 
 st.sidebar.markdown("---")
 st.sidebar.header("🔍 Advanced Filters")
@@ -271,7 +273,7 @@ try:
             
             st.dataframe(
                 df_targets[display_cols],
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "target_name": st.column_config.TextColumn("Target"),
@@ -295,7 +297,7 @@ try:
             with col_view:
                 st.subheader("👁️ Quick Analysis")
                 selected_for_view = st.selectbox("Select Tracker to View Details", df_targets["target_name"].tolist())
-                if st.button("Analyze Now", use_container_width=True):
+                if st.button("Analyze Now", width='stretch'):
                     # Find type
                     t_type = df_targets[df_targets["target_name"] == selected_for_view]["source_type"].values[0]
                     # Map source_type to entity type (rough heuristic)
@@ -312,13 +314,13 @@ try:
                 
                 m1, m2 = st.columns(2)
                 with m1:
-                    if st.button("🚀 Run Now", use_container_width=True, key=f"run_{target_id}"):
+                    if st.button("🚀 Run Now", width='stretch', key=f"run_{target_id}"):
                         res = requests.post(f"{API_BASE}/targets/{target_id}/run")
                         if res.status_code == 200:
                             st.success("Scrape triggered!")
                             st.rerun()
                 with m2:
-                    if st.button("🗑️ Delete", use_container_width=True, key=f"del_{target_id}"):
+                    if st.button("🗑️ Delete", width='stretch', key=f"del_{target_id}"):
                         res = requests.delete(f"{API_BASE}/targets/{target_id}")
                         if res.status_code == 200:
                             st.toast("Target and all associated data deleted!", icon="🗑️")
@@ -355,10 +357,10 @@ if st.session_state["view_mode"] == "Topic":
             with c1:
                 df_trends = df.dropna(subset=['published_at']).sort_values('published_at')
                 fig = px.line(df_trends, x='published_at', y='sentiment_score', color='entity', title="Sentiment Over Time")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             with c2:
                 fig_cat = px.pie(df, names='category', title="Topic Distribution")
-                st.plotly_chart(fig_cat, use_container_width=True)
+                st.plotly_chart(fig_cat, width='stretch')
     except Exception as e:
         st.error(f"Topic analysis error: {e}")
 
@@ -376,7 +378,7 @@ elif st.session_state["view_mode"] == "Company":
                 fig_heatmap = px.bar(df_sectors, x='sector', y='avg_sentiment', color='avg_sentiment', 
                                     color_continuous_scale="RdYlGn", range_color=[-1, 1],
                                     title="Sector Sentiment Heatmap")
-                st.plotly_chart(fig_heatmap, use_container_width=True)
+                st.plotly_chart(fig_heatmap, width='stretch')
                 st.caption("Average global sentiment across relevant industry sectors.")
     except: pass
 
@@ -400,7 +402,7 @@ elif st.session_state["view_mode"] == "Company":
             m_lookback = st.selectbox("Lookback Period", [30, 60, 90, 180], index=2, key="m_days")
         with col_m2:
             st.write("") # Padding
-            if st.button("🔍 Run Correlation Analysis", use_container_width=True):
+            if st.button("🔍 Run Correlation Analysis", width='stretch'):
                 with st.spinner(f"Analyzing {m_company}..."):
                     try:
                         res = requests.get(f"{API_BASE}/market/correlation/{m_company}", params={"days": m_lookback})
@@ -454,7 +456,7 @@ elif st.session_state["view_mode"] == "Company":
                         hovermode="x unified", height=400,
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                     )
-                    st.plotly_chart(fig_dual, use_container_width=True)
+                    st.plotly_chart(fig_dual, width='stretch')
 
                 with col_gauge:
                     signal = corr.get("signal_strength", 0)
@@ -472,7 +474,7 @@ elif st.session_state["view_mode"] == "Company":
                         }
                     ))
                     fig_gauge.update_layout(height=250, margin=dict(t=40, b=0, l=10, r=10))
-                    st.plotly_chart(fig_gauge, use_container_width=True)
+                    st.plotly_chart(fig_gauge, width='stretch')
             
             # Lag Analysis Table
             lag_data = corr.get("lag_analysis", [])
@@ -480,7 +482,7 @@ elif st.session_state["view_mode"] == "Company":
                 st.subheader("Lag Correlation Analysis", help="Measures if sentiment changes lead to price changes.")
                 df_lag = pd.DataFrame(lag_data)
                 df_lag["lag"] = df_lag["lag"].apply(lambda x: f"{x} day{'s' if x != 1 else ''}")
-                st.dataframe(df_lag, use_container_width=True, hide_index=True)
+                st.dataframe(df_lag, width='stretch', hide_index=True)
 
             if st.button("📄 Export Correlation PDF", key="exp_corr"):
                 pdf_bytes = get_pdf_bytes("Market Correlation Report", [corr])
@@ -495,7 +497,7 @@ elif st.session_state["view_mode"] == "Company":
         if df_feed.empty:
             st.info(f"No recent intelligence events found for {st.session_state['selected_entity']}.")
         else:
-            st.dataframe(df_feed, use_container_width=True)
+            st.dataframe(df_feed, width='stretch')
             if st.button("Generate Feed Report (PDF)"):
                 pdf_bytes = get_pdf_bytes(f"{st.session_state['selected_entity']} Intel Report", df_feed.head(20).to_dict('records'))
                 st.download_button("Download PDF", data=pdf_bytes, file_name=f"intel_{st.session_state['selected_entity']}.pdf")
@@ -510,10 +512,211 @@ elif st.session_state["view_mode"] == "People":
             st.info(f"No data found for {st.session_state['selected_entity']}.")
         else:
             st.subheader("Intelligence Feed")
-            st.dataframe(df_people, use_container_width=True)
+            st.dataframe(df_people, width='stretch')
     except Exception as e:
         st.error(f"People view error: {e}")
 
+elif st.session_state["view_mode"] == "Graph":
+    st.header("🕸️ Knowledge Graph")
+    st.caption("Interactive network of entities discovered from intelligence feeds.")
+    
+    # Graph Controls
+    col_g1, col_g2, col_g3 = st.columns([1, 1, 2])
+    with col_g1:
+        kg_entity = st.text_input("Central Entity (Optional)", value=st.session_state["selected_entity"] if st.session_state["selected_entity"] != "All" else "", help="Leave blank to see the whole network")
+    with col_g2:
+        kg_min_co = st.number_input("Min Co-mentions", min_value=1, value=2, help="Filter out weak relationships")
+    with col_g3:
+        kg_types = st.multiselect("Entity Types", ["COMPANY", "PERSON", "ORG", "TOPIC", "PRODUCT", "LOCATION"], default=["COMPANY", "PERSON", "ORG", "TOPIC"])
+    
+    # Fetch Graph Data
+    try:
+        with st.spinner("Building Graph..."):
+            params = {
+                "min_co_occurrences": kg_min_co,
+                "days": 30, # Could make this a control
+            }
+            if kg_entity:
+                params["entity"] = kg_entity
+            if kg_types:
+                params["entity_types"] = ",".join(kg_types)
+                
+            res = requests.get(f"{API_BASE}/knowledge-graph", params=params)
+            res.raise_for_status()
+            kg_data = res.json()
+            
+            nodes = kg_data.get("nodes", [])
+            edges = kg_data.get("edges", [])
+            stats = kg_data.get("stats", {})
+            
+            # Stats Banner
+            c_s1, c_s2, c_s3 = st.columns(3)
+            c_s1.metric("Total Entities", stats.get("total_nodes", 0))
+            c_s2.metric("Relationships", stats.get("total_edges", 0))
+            c_s3.metric("Most Connected", stats.get("most_connected", "None"))
+            
+            st.divider()
+            
+            if not nodes:
+                st.info("No connections found matching filters.")
+            else:
+                col_viz, col_detail = st.columns([3, 1])
+                
+                with col_viz:
+                    # Build pyvis graph
+                    from pyvis.network import Network
+                    import tempfile
+                    
+                    # Premium Color Palette
+                    color_map = {
+                        "COMPANY": "#00d2ff", # Cyan
+                        "PERSON": "#00ff87",  # Spring Green
+                        "ORG": "#ff9a3b",     # Orange
+                        "TOPIC": "#bc6ff1",    # Purple
+                        "PRODUCT": "#ff4b2b",  # Red-Orange
+                        "LOCATION": "#8d5524"  # Brown
+                    }
+                    
+                    net = Network(height="600px", width="100%", bgcolor="#0E1117", font_color="white", select_menu=False)
+                    
+                    # Advanced Styling Options
+                    options = {
+                        "nodes": {
+                            "font": {"size": 14, "color": "#ffffff", "face": "Inter"},
+                            "shadow": {"enabled": True, "color": "rgba(0,0,0,0.5)"}
+                        },
+                        "edges": {
+                            "smooth": {"type": "continuous", "roundness": 0.5},
+                            "color": {"inherit": "both"},
+                            "opacity": 0.4,
+                            "width": 2
+                        },
+                        "physics": {
+                            "forceAtlas2Based": {
+                                "gravitationalConstant": -100,
+                                "centralGravity": 0.015,
+                                "springLength": 150,
+                                "springConstant": 0.05,
+                                "avoidOverlap": 1.0
+                            },
+                            "solver": "forceAtlas2Based",
+                            "stabilization": {"iterations": 200}
+                        },
+                        "interaction": {
+                            "hover": True,
+                            "tooltipDelay": 100,
+                            "hideEdgesOnDrag": True,
+                            "zoomView": True
+                        }
+                    }
+                    import json
+                    net.set_options(json.dumps(options))
+                    
+                    # Add nodes
+                    for n in nodes:
+                        c = color_map.get(n["type"], "#7f7f7f")
+                        border_width = 4 if n.get("is_tracked") else 0
+                        
+                        net.add_node(
+                            n["name"], 
+                            title=f"Type: {n['type']}\nMentions: {n.get('mention_count')}", 
+                            label=n["name"], 
+                            value=max(2, n.get("mention_count", 1)) * 3, 
+                            color={"background": c, "border": "rgba(255,255,255,0.8)"},
+                            borderWidth=border_width
+                        )
+                    
+                    # Add edges
+                    for e in edges:
+                        s = e.get("avg_sentiment", 0)
+                        # More vibrant sentiment colors
+                        edge_color = "rgba(0, 255, 135, 0.7)" if s > 0.1 else "rgba(255, 75, 43, 0.7)" if s < -0.1 else "rgba(255, 255, 255, 0.2)"
+                        
+                        net.add_edge(
+                            e["source"], 
+                            e["target"], 
+                            value=e["weight"],
+                            title=f"Co-mentions: {e['weight']}\nAvg Sentiment: {s:.2f}",
+                            color=edge_color
+                        )
+                    
+                    html_string = net.generate_html()
+                    import re
+                    
+                    # Fix: Pyvis CDN and Script stabilization
+                    html_string = re.sub(
+                        r'src="lib/vis-network/vis-network\.min\.js"',
+                        'src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js"',
+                        html_string
+                    )
+                    html_string = html_string.replace(
+                        'https://visjs.github.io/vis-network/standalone/umd/vis-network.min.js',
+                        'https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js'
+                    )
+                    html_string = re.sub(r'<script src="lib/.*"></script>', '', html_string)
+                    html_string = re.sub(r'<link rel="stylesheet" href="lib/.*">', '', html_string)
 
+                    import streamlit.components.v1 as components
+                    components.html(html_string, height=615, scrolling=False)
+                    st.caption("🔵 Company | 🟢 Person | 🟠 Org | 🟣 Topic | 🔴 Product | 🟤 Location. Bold border = Tracked.")
+                
+                with col_detail:
+                    st.subheader("🎯 Entity Deep Dive")
+                    all_names = sorted([n["name"] for n in nodes])
+                    detail_target = st.selectbox("Select entity from graph", all_names, index=all_names.index(kg_entity) if kg_entity in all_names else 0)
+                    
+                    if detail_target:
+                        det_res = requests.get(f"{API_BASE}/knowledge-graph/entity/{detail_target}/details")
+                        if det_res.status_code == 200:
+                            det_data = det_res.json()
+                            conns = det_data.get("top_connections", [])
+                            
+                            if conns:
+                                # Visualise connections with a chart
+                                df_conns = pd.DataFrame(conns)
+                                # Map sentiment to colors for plotly
+                                df_conns['color'] = df_conns['avg_sentiment'].apply(lambda x: 'Positive' if x > 0.1 else ('Negative' if x < -0.1 else 'Neutral'))
+                                
+                                fig_conns = px.bar(
+                                    df_conns, 
+                                    y='name', 
+                                    x='co_mentions', 
+                                    color='avg_sentiment',
+                                    color_continuous_scale="RdYlGn",
+                                    range_color=[-1, 1],
+                                    orientation='h',
+                                    title=f"Top Relationships",
+                                    labels={'co_mentions': 'Strength', 'name': '', 'avg_sentiment': 'Sentiment'}
+                                )
+                                fig_conns.update_layout(
+                                    showlegend=False, 
+                                    height=400, 
+                                    margin=dict(l=150, r=20, t=40, b=40),
+                                    paper_bgcolor='rgba(0,0,0,0)',
+                                    plot_bgcolor='rgba(0,0,0,0)',
+                                    font_color="white",
+                                    yaxis={'categoryorder':'total ascending'}
+                                )
+                                st.plotly_chart(fig_conns, width='stretch')
+                            else:
+                                st.info("No strong connections found.")
+                                
+                            st.divider()
+                            st.markdown("🎯 **Track from Graph**")
+                            # Form to create a target from this entity
+                            with st.form(f"track_{detail_target}"):
+                                t_src = st.selectbox("Source", ["Google News", "Reddit Subreddit", "Nitter/X User"])
+                                if st.form_submit_button("Start Tracking"):
+                                    payload = {
+                                        "target_name": detail_target,
+                                        "source_type": t_src,
+                                        "scrape_interval_minutes": 60,
+                                        "campaign": "Discovered via Graph"
+                                    }
+                                    requests.post(f"{API_BASE}/targets", json=payload)
+                                    st.success(f"Added {detail_target}!")
+
+    except Exception as e:
+        st.error(f"Failed to load Knowledge Graph: {e}")
 
 # ... End of Dashboard ...

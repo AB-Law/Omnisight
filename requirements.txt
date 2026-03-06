@@ -35,3 +35,7 @@ fpdf2
 # Testing
 pytest
 httpx
+
+# Knowledge Graph
+pyvis
+networkx

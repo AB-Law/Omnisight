@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Boolean, JSON, Numeric, DateTime, ForeignKey, Date, Text, UniqueConstraint, Integer
+from sqlalchemy import Column, String, Boolean, JSON, Numeric, DateTime, ForeignKey, Date, Text, UniqueConstraint, Integer, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
@@ -89,4 +89,52 @@ class StockPrice(Base):
     
     __table_args__ = (
         UniqueConstraint('ticker_symbol', 'date', name='uq_ticker_date'),
+    )
+
+
+# ──────────────── Knowledge Graph Tables ────────────────
+
+ENTITY_MENTION_TYPES = ('PERSON', 'COMPANY', 'ORG', 'LOCATION', 'PRODUCT', 'TOPIC')
+
+
+class EntityMention(Base):
+    """Every named entity extracted from a scraped event by the LLM."""
+    __tablename__ = "entity_mentions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id = Column(UUID(as_uuid=True), ForeignKey("events.id", ondelete="CASCADE"), nullable=False, index=True)
+    mentioned_name = Column(String(255), nullable=False)          # Raw extracted name (e.g. "Elon Musk")
+    mentioned_type = Column(String(50), nullable=False)           # PERSON, COMPANY, ORG, LOCATION, PRODUCT, TOPIC
+    resolved_entity_id = Column(UUID(as_uuid=True), ForeignKey("entities.id", ondelete="SET NULL"), nullable=True)  # Matched to a tracked Entity
+    confidence = Column(Numeric(3, 2), nullable=True)             # LLM confidence score (0-1), for future quality filtering
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index('ix_entity_mentions_name_type', 'mentioned_name', 'mentioned_type'),
+    )
+
+
+class EntityRelationship(Base):
+    """Pre-computed co-occurrence edges between entity pairs. 
+    
+    Canonical ordering: entity_a_name < entity_b_name (lexicographic) to prevent duplicate edges.
+    Updated incrementally on each event that co-mentions the pair.
+    """
+    __tablename__ = "entity_relationships"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    entity_a_name = Column(String(255), nullable=False)           # Always the lexicographically smaller name
+    entity_b_name = Column(String(255), nullable=False)           # Always the lexicographically larger name
+    entity_a_type = Column(String(50), nullable=True)             # Used for graph node color-coding
+    entity_b_type = Column(String(50), nullable=True)
+    co_occurrence_count = Column(Integer, default=1, nullable=False)  # How many events mention both
+    avg_sentiment = Column(Numeric(5, 4), nullable=True)          # Avg sentiment across shared events
+    first_seen = Column(DateTime(timezone=True), server_default=func.now())
+    last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    source_types = Column(JSON, default={})                       # e.g. {"Reddit": 3, "Google News": 8}
+
+    __table_args__ = (
+        UniqueConstraint('entity_a_name', 'entity_b_name', name='uq_entity_relationship_pair'),
+        Index('ix_entity_relationships_a', 'entity_a_name'),
+        Index('ix_entity_relationships_b', 'entity_b_name'),
     )

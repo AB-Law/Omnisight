@@ -84,8 +84,9 @@ def run_target_now(target_id: str, db: Session = Depends(get_db)):
 
 @router.delete("/targets/{target_id}")
 def delete_target(target_id: str, db: Session = Depends(get_db)):
-    """Delete a target and ALL related intelligence/market data."""
-    from intelligence_api.domain.models import ScrapeTarget, Entity, ScrapedEvent, DailyTrend, TickerMapping, StockPrice
+    """Delete a target and ALL related intelligence/market/graph data."""
+    from intelligence_api.domain.models import ScrapeTarget, Entity, ScrapedEvent, DailyTrend, TickerMapping, StockPrice, EntityMention, EntityRelationship
+    from sqlalchemy import or_
     import uuid
     
     try:
@@ -99,10 +100,18 @@ def delete_target(target_id: str, db: Session = Depends(get_db)):
         entity = db.query(Entity).filter(Entity.label == target.target_name).first()
         
         if entity:
-            # 2. Delete Events and DailyTrends
+            # 2. Delete Events and DailyTrends, Mentions
             db.query(ScrapedEvent).filter(ScrapedEvent.entity_id == entity.id).delete()
             db.query(DailyTrend).filter(DailyTrend.entity_id == entity.id).delete()
+            db.query(EntityMention).filter(EntityMention.resolved_entity_id == entity.id).delete()
             
+            # 3. Handle Relationships
+            normalized_name = entity.label.strip()
+            db.query(EntityRelationship).filter(or_(
+                EntityRelationship.entity_a_name == normalized_name,
+                EntityRelationship.entity_b_name == normalized_name
+            )).delete()
+
             # 4. Handle Market Data
             mapping = db.query(TickerMapping).filter(TickerMapping.company_name == entity.label.lower()).first()
             if mapping:
@@ -123,7 +132,7 @@ def delete_target(target_id: str, db: Session = Depends(get_db)):
             db.delete(entity)
 
         
-        # 5. Finally delete the target itself
+        # 7. Finally delete the target itself
         db.delete(target)
         db.commit()
         
@@ -215,3 +224,131 @@ def get_sector_heatmap(db: Session = Depends(get_db)):
         return {"sectors": data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────── Knowledge Graph Endpoints ────────────────
+
+@router.get("/knowledge-graph")
+def get_knowledge_graph(
+    entity: Optional[str] = None,
+    min_co_occurrences: int = 2,
+    days: int = 30,
+    entity_types: Optional[str] = None, # comma separated
+    db: Session = Depends(get_db)
+):
+    """
+    Returns nodes and edges for the Knowledge Graph visualization.
+    Filters by optional central entity, minimum co-occurrences, time window, and entity types.
+    """
+    from intelligence_api.domain.models import EntityRelationship, Entity, EntityMention
+    from sqlalchemy import or_, and_, desc
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    types_filter = entity_types.split(",") if entity_types and entity_types != "All" else None
+
+    # Base query for edges
+    query = db.query(EntityRelationship).filter(
+        EntityRelationship.last_seen >= cutoff,
+        EntityRelationship.co_occurrence_count >= min_co_occurrences
+    )
+
+    if entity:
+        normalized = entity.strip()
+        query = query.filter(or_(
+            EntityRelationship.entity_a_name == normalized,
+            EntityRelationship.entity_b_name == normalized
+        ))
+        
+    if types_filter:
+        # Include edges where AT LEAST ONE entity matches the type filter
+        query = query.filter(or_(
+            EntityRelationship.entity_a_type.in_(types_filter),
+            EntityRelationship.entity_b_type.in_(types_filter)
+        ))
+
+    # Limit to top 200 edges to prevent massive graphs
+    edges_raw = query.order_by(desc(EntityRelationship.co_occurrence_count)).limit(200).all()
+
+    nodes_dict = {}
+    edges_out = []
+
+    # Get set of all currently tracked entities
+    tracked_labels = {e.label.lower() for e in db.query(Entity.label).all()}
+
+    for e in edges_raw:
+        def add_node(name, etype):
+            if name not in nodes_dict:
+                nodes_dict[name] = {
+                    "name": name,
+                    "type": etype,
+                    "mention_count": 0, # Can be enriched if needed, but we'll use co_occurrence for size
+                    "is_tracked": name.lower() in tracked_labels
+                }
+            nodes_dict[name]["mention_count"] += e.co_occurrence_count
+        
+        # Only add nodes/edges if they meet the type filter logic after extracting
+        keep = True
+        if types_filter and entity:
+            # If a specific entity is queried, maybe the OTHER entity doesn't match the type filter.
+            # E.g. query=Tesla, type=PERSON. We only want edges where the non-Tesla node is a PERSON.
+            other_type = e.entity_b_type if e.entity_a_name == entity.strip() else e.entity_a_type
+            if other_type not in types_filter:
+                keep = False
+
+        if keep:
+            add_node(e.entity_a_name, e.entity_a_type)
+            add_node(e.entity_b_name, e.entity_b_type)
+
+            edges_out.append({
+                "source": e.entity_a_name,
+                "target": e.entity_b_name,
+                "weight": e.co_occurrence_count,
+                "avg_sentiment": float(e.avg_sentiment) if e.avg_sentiment else 0.0,
+                "last_seen": e.last_seen.isoformat() if e.last_seen else None
+            })
+
+    nodes_list = list(nodes_dict.values())
+    
+    # Calculate most connected for stats
+    most_connected = max(nodes_list, key=lambda x: x["mention_count"], default={"name": "None"})["name"]
+
+    return {
+        "nodes": nodes_list,
+        "edges": edges_out,
+        "stats": {
+            "total_nodes": len(nodes_list),
+            "total_edges": len(edges_out),
+            "most_connected": most_connected
+        }
+    }
+
+@router.get("/knowledge-graph/entity/{name}/details")
+def get_entity_graph_details(name: str, db: Session = Depends(get_db)):
+    """Fetch recent co-mentions and details for a specific entity."""
+    from intelligence_api.domain.models import EntityRelationship, EntityMention, ScrapedEvent
+    from sqlalchemy import or_, desc
+    
+    normalized = name.strip()
+    
+    # Top connections
+    connections = db.query(EntityRelationship).filter(or_(
+        EntityRelationship.entity_a_name == normalized,
+        EntityRelationship.entity_b_name == normalized
+    )).order_by(desc(EntityRelationship.co_occurrence_count)).limit(10).all()
+    
+    related = []
+    for c in connections:
+        other_name = c.entity_b_name if c.entity_a_name == normalized else c.entity_a_name
+        other_type = c.entity_b_type if c.entity_a_name == normalized else c.entity_a_type
+        related.append({
+            "name": other_name,
+            "type": other_type,
+            "co_mentions": c.co_occurrence_count,
+            "avg_sentiment": float(c.avg_sentiment or 0)
+        })
+        
+    return {
+        "entity": normalized,
+        "top_connections": related
+    }

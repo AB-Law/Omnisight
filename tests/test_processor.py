@@ -43,3 +43,25 @@ def test_cache_hit_prevents_ai_call(processor):
     asyncio.run(processor.process_event(raw_event))
     
     processor.ai.analyze_content.assert_not_called()
+
+def test_build_knowledge_graph(processor):
+    """Test that entities and relationships are passed to the DB session correctly."""
+    processor.db.query.return_value.all.return_value = [] # No tracked entities initially
+    processor.db.query.return_value.filter.return_value.first.return_value = None # No existing relationship
+    
+    mentioned = [
+        {"name": "Tesla", "type": "COMPANY"},
+        {"name": "Elon Musk", "type": "PERSON"},
+        {"name": "Tesla", "type": "COMPANY"} # Duplicate should be ignored
+    ]
+    
+    processor._build_knowledge_graph(
+        event_id="dummy-event-id",
+        mentioned_entities=mentioned,
+        source_type="Twitter",
+        sentiment=0.75
+    )
+    
+    # 2 mentions saved (Tesla and Elon Musk, duplicate ignored)
+    assert processor.db.add.call_count >= 2 
+    assert processor.db.commit.call_count >= 1
