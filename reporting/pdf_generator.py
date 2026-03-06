@@ -46,12 +46,14 @@ def generate_pdf(title, data):
             
             # If it's an event, we format it as a block
             if src_val or sent_val:
+                pdf.set_x(10)
                 pdf.set_font('Helvetica', 'B', 11)
                 pdf.multi_cell(0, 10, f"Source: {src_val} | Sentiment: {sent_val}")
                 pdf.set_font('Helvetica', '', 11)
                 content = item.get('content') or item.get('summary') or item.get('Text') or ""
                 # Strip special characters to help fpdf encoding
                 content_safe = "".join(i for i in str(content) if ord(i) < 128)
+                pdf.set_x(10)
                 pdf.multi_cell(0, 8, content_safe)
                 pdf.ln(5)
             else:
@@ -63,17 +65,21 @@ def generate_pdf(title, data):
                     k_safe = "".join(i for i in k_str if ord(i) < 128)
                     v_safe = "".join(i for i in v_str if ord(i) < 128)
                     
+                    pdf.set_x(10)
                     pdf.set_font('Helvetica', 'B', 10)
-                    pdf.write(10, f"{k_safe}: ")
+                    pdf.cell(0, 8, f"{k_safe}:", 0, 1)
                     pdf.set_font('Helvetica', '', 10)
-                    pdf.write(10, f"{v_safe}\n")
+                    pdf.set_x(10)
+                    import textwrap
+                    wrapped_v = "\n".join(textwrap.wrap(v_safe, width=90))
+                    pdf.multi_cell(0, 8, f"{wrapped_v}")
                 pdf.ln(5)
 
         # Output logic (handles fpdf1 vs fpdf2)
         out = pdf.output(dest='S')
         if isinstance(out, str):
             return out.encode('latin-1', 'ignore')
-        return out
+        return bytes(out) if isinstance(out, bytearray) else out
         
     except Exception as e:
         # Final emergency fallback: Create a minimal error PDF
@@ -81,6 +87,9 @@ def generate_pdf(title, data):
         err_pdf.add_page()
         err_pdf.set_font('Helvetica', 'B', 12)
         err_pdf.cell(0, 10, f"PDF Generation Error: {str(e)}", 0, 1)
-        return err_pdf.output(dest='S').encode('latin-1', 'ignore') if isinstance(err_pdf.output(dest='S'), str) else err_pdf.output(dest='S')
+        out = err_pdf.output(dest='S')
+        if isinstance(out, str):
+            return out.encode('latin-1', 'ignore')
+        return bytes(out) if isinstance(out, bytearray) else out
 
 

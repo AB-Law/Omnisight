@@ -24,7 +24,18 @@ async def lifespan(app: FastAPI):
     if _subscriber_future:
         _subscriber_future.cancel()
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="Omnisight Intelligence API", lifespan=lifespan)
+
+# Add CORS middleware to allow the UI to communicate with the API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins for development
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 app.include_router(router.router)
 

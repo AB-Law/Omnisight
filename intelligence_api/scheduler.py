@@ -13,24 +13,28 @@ def run_scraper(target: ScrapeTarget):
     """Dynamically runs the associated scraper for a target"""
     source = target.source_type
     name = target.target_name
+    metadata = target.metadata_json or {}
+    entity_type = metadata.get("entity_type", "COMPANY")
+    discovery_depth = metadata.get("discovery_depth", 0)
+    allow_discovery = metadata.get("allow_discovery", False)
     
-    if source == "Reddit Subreddit":
+    if source in ["Reddit Subreddit", "Reddit Hub"]:
         from data_ingestion.scrapers.reddit import RedditScraper
         scraper = RedditScraper(settings.PROJECT_ID, settings.PUBSUB_TOPIC)
-        scraper.scrape_subreddit(name, limit=20)
-    elif source == "Google News":
+        scraper.scrape_subreddit(name, limit=20, entity_type=entity_type, discovery_depth=discovery_depth, allow_discovery=allow_discovery)
+    elif source in ["Google News", "Global News"]:
         from data_ingestion.scrapers.news import NewsScraper
         scraper = NewsScraper(settings.PROJECT_ID, settings.PUBSUB_TOPIC)
         
         # Get period from metadata if set
-        period = (target.metadata_json or {}).get("period")
+        period = metadata.get("period")
         # Increase limit if period is set to fetch 'more' data as requested
         max_results = 100 if period else 20
-        scraper.scrape_topic(name, limit=max_results, period=period)
-    elif source == "Nitter/X User":
+        scraper.scrape_topic(name, limit=max_results, period=period, entity_type=entity_type, discovery_depth=discovery_depth, allow_discovery=allow_discovery)
+    elif source in ["Nitter/X User", "X (Twitter)"]:
         from data_ingestion.scrapers.nitter import NitterScraper
         scraper = NitterScraper(settings.PROJECT_ID, settings.PUBSUB_TOPIC)
-        scraper.scrape_user(name)
+        scraper.scrape_user(name, entity_type=entity_type, discovery_depth=discovery_depth, allow_discovery=allow_discovery)
     else:
         raise ValueError(f"Unknown source_type: {source}")
 

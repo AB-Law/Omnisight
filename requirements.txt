@@ -4,6 +4,7 @@ uvicorn[standard]
 pydantic
 pydantic-settings
 python-dotenv
+psutil
 
 # Database
 sqlalchemy

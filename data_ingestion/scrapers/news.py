@@ -12,7 +12,7 @@ class NewsScraper:
         self.publisher = pubsub_v1.PublisherClient()
         self.topic_path = self.publisher.topic_path(project_id, topic_id)
 
-    def scrape_topic(self, topic: str, limit: int = 15, period: str = None):
+    def scrape_topic(self, topic: str, limit: int = 15, period: str = None, entity_type: str = "COMPANY", discovery_depth: int = 0, allow_discovery: bool = False):
         """Scrapes global news about a specific topic/entity using Google News RSS.
            'period' can be something like '7d', '30d', '1h', etc.
         """
@@ -39,11 +39,14 @@ class NewsScraper:
             
             payload = {
                 "entity_label": topic,
+                "entity_type": entity_type,
                 "content": f"{entry.title}\n{entry.get('description', '')}\nSource: {source_name}",
                 "source_type": "News",
                 "is_user": False,
                 "raw_url": entry.link,
-                "published_at": getattr(entry, 'published', None)
+                "published_at": getattr(entry, 'published', None),
+                "discovery_depth": discovery_depth,
+                "allow_discovery": allow_discovery
             }
             self.publish(payload)
             time.sleep(0.5) # Gentle pacing

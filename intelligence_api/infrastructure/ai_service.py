@@ -100,15 +100,22 @@ class AIClient:
         4. **Sector**: The industry sector of the primary company/entity mentioned (e.g., 'Technology', 'Finance', 'Energy', etc.).
         5. **Entity Description**: A brief 1-sentence description of the primary company mentioned.
         6. **Mentioned Entities**: Extract ALL named entities from the text. For each entity provide:
-           - name: The entity's canonical name (e.g. "Elon Musk", not "he" or "the CEO")
-           - type: One of PERSON, COMPANY, ORG, LOCATION, PRODUCT, or TOPIC
-           Include companies, people, government bodies, products, locations, and themes (like "AI Regulation", "Interest Rates").
+           - name: The entity's canonical name (e.g. "Elon Musk", "Tesla"). 
+           - type: One of PERSON, COMPANY, ORG, LOCATION, PRODUCT, or TOPIC.
+           - relevance_score: An integer from 1-10 (10 being most critical/central to the text).
+           
+           **STRICT NER RULES**:
+           - **COMPANY**: Extract companies, organizations, and institutional bodies. **HIGHLIGHT ALL RELEVANT COMPANIES** even if the text is primarily about a Person.
+           - **PERSON**: Extract ONLY actual names of individuals.
+           - **LOCATION**: Extract Countries, Cities, or Regions (e.g., "India", "Paris"). 
+           - **BLACKLIST**: DO NOT extract generic titles (CEO, Founder, etc.).
+           
            Limit to the 10 most relevant. Return an empty list if none found.
         
         Text: {text}
         
         Return JSON ONLY in this format:
-        {{"sentiment": 0.5, "summary": "...", "category": "...", "sector": "Technology", "entity_description": "...", "mentioned_entities": [{{"name": "Tesla", "type": "COMPANY"}}, {{"name": "Elon Musk", "type": "PERSON"}}]}}
+        {{"sentiment": 0.5, "summary": "...", "category": "...", "sector": "...", "entity_description": "...", "mentioned_entities": [{{"name": "Tesla", "type": "COMPANY", "relevance_score": 10}}, {{"name": "Elon Musk", "type": "PERSON", "relevance_score": 9}}]}}
         """
         
         response = self.client.chat.completions.create(

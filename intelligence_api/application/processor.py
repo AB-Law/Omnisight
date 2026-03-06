@@ -14,14 +14,35 @@ class IntelligenceProcessor:
         self.ai = AIClient()
 
     async def process_event(self, raw_data: Dict[str, Any]):
+        """Main entry point for processing a single scraped event."""
+        entity_label = raw_data.get("entity_label")
         content = raw_data.get("content", "")
-        entity_label = raw_data.get("entity_label", "")
-        source_type = raw_data.get("source_type", "")
+        source_type = raw_data.get("source_type", "Unknown")
         is_user = raw_data.get("is_user", False)
+        discovery_depth = raw_data.get("discovery_depth", 0) or raw_data.get("metadata", {}).get("discovery_depth", 0)
+
+        if not entity_label or not content:
+            return {"status": "SKIPPED", "reason": "Missing label or content"}
+
+        # 0. Relational Deduplication Check
+        url = raw_data.get("raw_url")
+        if url:
+             existing_event = self.db.query(ScrapedEvent).filter(ScrapedEvent.raw_url == url).first()
+             if existing_event:
+                 import logging
+                 logging.getLogger(__name__).info(f"⏭️ Skipping duplicate article: {url}")
+                 # Return existing analysis structure
+                 return {
+                     "sentiment": float(existing_event.sentiment_score) if existing_event.sentiment_score else 0,
+                     "summary": existing_event.summary,
+                     "category": existing_event.category,
+                     "status": "DUPLICATE_SKIPPED"
+                 }
 
         # 1. PII Handling
         safe_label = hash_pii(entity_label) if is_user else entity_label
         sanitized_content = clean_content(content)
+        entity_type_hint = raw_data.get("entity_type", "COMPANY")
         
         # Parse published_at
         published_at_raw = raw_data.get("published_at")
@@ -60,7 +81,7 @@ class IntelligenceProcessor:
         if not entity:
             entity = Entity(
                 label=safe_label, 
-                type='USER' if is_user else 'COMPANY',
+                type=entity_type_hint if not is_user else 'PERSON', # Improved classification
                 is_pii=is_user,
                 sector=analysis.get("sector"),
                 description=analysis.get("entity_description")
@@ -99,8 +120,9 @@ class IntelligenceProcessor:
 
         # 7. Build Knowledge Graph (entity mentions + relationships)
         mentioned_entities = analysis.get("mentioned_entities", [])
+        allow_discovery = raw_data.get("allow_discovery", False)
         if mentioned_entities and isinstance(mentioned_entities, list):
-            self._build_knowledge_graph(event.id, mentioned_entities, source_type, analysis.get("sentiment"))
+            self._build_knowledge_graph(event.id, mentioned_entities, source_type, analysis.get("sentiment"), discovery_depth, entity.type, allow_discovery)
 
         return analysis
 
@@ -110,6 +132,9 @@ class IntelligenceProcessor:
         mentioned_entities: List[Dict],
         source_type: str,
         sentiment: Optional[float],
+        discovery_depth: int = 0,
+        source_entity_type: str = "COMPANY",
+        allow_discovery: bool = False
     ):
         """Creates EntityMention records and upserts EntityRelationship edges."""
         import logging
@@ -122,16 +147,42 @@ class IntelligenceProcessor:
         # Normalize and deduplicate entities for this event
         seen_names = set()
         clean_entities = []
+        
+        # Persona Titles/Generic Roles Blacklist
+        PERSONA_BLACKLIST = {
+            "CEO", "CFO", "CTO", "COO", "C.E.O.", "C.E.O", "FOUNDER", "CO-FOUNDER", 
+            "CHAIRMAN", "PRESIDENT", "DIRECTOR", "EXECUTIVE",
+            "SPOKESPERSON", "REPRESENTATIVE", "EMPLOYEE", "ANALYST"
+        }
+
         for ent in mentioned_entities:
             name = ent.get("name", "").strip()
             ent_type = ent.get("type", "COMPANY").upper()
+            
             if not name or name in seen_names:
                 continue
+            
+            # Filter out generic titles being misidentified as People
+            if ent_type == "PERSON" and name.upper().replace(".","") in {"CEO", "CFO", "CTO", "COO", "FOUNDER", "COFOUNDER", "CHAIRMAN"}:
+                logger.info(f"🚫 Filtering out generic persona title: '{name}'")
+                continue
+            
+            if ent_type == "PERSON" and name.upper() in PERSONA_BLACKLIST:
+                logger.info(f"🚫 Filtering out generic persona title: '{name}'")
+                continue
+
             seen_names.add(name)
-            clean_entities.append({"name": name, "type": ent_type})
+            clean_entities.append({
+                "name": name, 
+                "type": ent_type, 
+                "relevance_score": ent.get("relevance_score", 0)
+            })
 
         if not clean_entities:
             return
+
+        # Sort by relevance score descending so we process important ones first
+        clean_entities.sort(key=lambda x: x["relevance_score"], reverse=True)
 
         # Build a lookup of tracked entities for resolution (name → entity_id)
         tracked_labels = {
@@ -139,9 +190,74 @@ class IntelligenceProcessor:
             for e in self.db.query(Entity).all()
         }
 
-        # Create EntityMention records
+        # Create EntityMention records and auto-register trackers for PERSON/COMPANY entities
+        from intelligence_api.domain.models import ScrapeTarget
+        from sqlalchemy.sql import func
+        
+        source_entity_type = source_entity_type.upper()
+        new_discovery_count = 0
+        MAX_DISCOVERIES_PER_EVENT = 3
+
         for ent in clean_entities:
             resolved_id = tracked_labels.get(ent["name"].lower())
+            ent_type = ent["type"].upper()
+            
+            # --- Discovery Logic Refinement ---
+            # 1. Company -> Person (Depth 1 -> 2, always allowed up to limit)
+            # 2. Person -> Person (Only allowed if 'allow_discovery' metadata is True)
+            # 3. Person -> Company (NEVER auto-tracked)
+            
+            should_auto_track = False
+            new_depth = discovery_depth + 1
+            interval = 1440 # Default 24h
+            
+            if source_entity_type == "COMPANY":
+                if ent_type == "PERSON" and discovery_depth < 2:
+                    if new_discovery_count < MAX_DISCOVERIES_PER_EVENT:
+                        should_auto_track = True
+                        interval = 2880 # People search is slower (48h interval)
+            elif source_entity_type == "PERSON":
+                # Only discover OTHER PEOPLE if manually enabled for this person target
+                if allow_discovery and ent_type == "PERSON" and discovery_depth < 2:
+                    if new_discovery_count < MAX_DISCOVERIES_PER_EVENT:
+                        should_auto_track = True
+                        interval = 2880
+            
+            # Note: All entities (especially Companies) are still recorded as EntityMention 
+            # so they are highlighted in the UI/Graph, but they aren't "Auto-Tracked" (ScrapeTarget)
+            # unless the rules above apply.
+
+            if should_auto_track and not resolved_id:
+                new_discovery_count += 1
+                # Create the new Entity explicitly
+                new_entity = Entity(
+                    label=ent["name"],
+                    type=ent_type,
+                    is_pii=(ent_type == "PERSON")
+                )
+                self.db.add(new_entity)
+                self.db.flush() # flush to get the ID
+                resolved_id = new_entity.id
+                tracked_labels[ent["name"].lower()] = resolved_id
+                
+                # Add an automatic ScrapeTarget
+                source = "Global News" if ent_type == "PERSON" else "Google News"
+                
+                new_target = ScrapeTarget(
+                    target_name=ent["name"],
+                    source_type=source,
+                    scrape_interval_minutes=interval,
+                    campaign="Auto-Discovery",
+                    metadata_json={
+                        "entity_type": ent_type,
+                        "discovery_depth": new_depth
+                    },
+                    status="Pending",
+                    next_scrape_at=func.now()
+                )
+                self.db.add(new_target)
+                logger.info(f"✨ Auto-registered {ent_type} tracker for '{ent['name']}' at depth {new_depth} (Discovery #{new_discovery_count}, Interval: {interval}m)")
+
             mention = EntityMention(
                 event_id=event_id,
                 mentioned_name=ent["name"],
@@ -153,7 +269,7 @@ class IntelligenceProcessor:
         try:
             self.db.commit()
         except Exception as e:
-            logger.warning(f"Failed to save entity mentions: {e}")
+            logger.warning(f"Failed to save entity mentions/targets: {e}")
             self.db.rollback()
             return
 

@@ -12,7 +12,7 @@ class NitterScraper:
         self.topic_path = self.publisher.topic_path(project_id, topic_id)
         self.instance = settings.NITTER_INSTANCE.rstrip('/')
 
-    def scrape_user(self, username: str):
+    def scrape_user(self, username: str, entity_type: str = "PERSON", discovery_depth: int = 0, allow_discovery: bool = False):
         """Scrapes a Twitter user via Nitter's RSS feed."""
         # Nitter RSS format: https://nitter.net/username/rss
         rss_url = f"{self.instance}/{username}/rss"
@@ -29,11 +29,14 @@ class NitterScraper:
         for entry in feed.entries:
             payload = {
                 "entity_label": username,
+                "entity_type": entity_type,
                 "content": entry.get("description", entry.title),
                 "source_type": "Nitter",
-                "is_user": True, # Twitter handles are usually individuals/accounts
+                "is_user": entity_type == "PERSON", # Twitter handles are usually individuals/accounts
                 "raw_url": entry.link,
-                "published_at": getattr(entry, 'published', None)
+                "published_at": getattr(entry, 'published', None),
+                "discovery_depth": discovery_depth,
+                "allow_discovery": allow_discovery
             }
             self.publish(payload)
             time.sleep(1) # Be a good citizen

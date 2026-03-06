@@ -20,19 +20,24 @@ class RedditScraper:
         )
         print(f"✅ Reddit Scraper initialized (Read-only: {self.reddit.read_only})")
 
-    def scrape_subreddit(self, subreddit_name: str, limit: int = 10):
-        """Scrapes a subreddit using official PRAW library."""
-        print(f"🕵️ Scaping r/{subreddit_name} via PRAW...")
+    def scrape_subreddit(self, subreddit_name: str, limit: int = 25, entity_type: str = "COMPANY", discovery_depth: int = 0, allow_discovery: bool = False):
+        """Fetches top posts from a subreddit and publishes to Pub/Sub."""
         try:
             subreddit = self.reddit.subreddit(subreddit_name)
-            for submission in subreddit.new(limit=limit):
+            
+            print(f"🕵️ Scraping /r/{subreddit_name}...")
+            
+            for post in subreddit.top(time_filter="day", limit=limit):
                 payload = {
                     "entity_label": subreddit_name,
-                    "content": f"{submission.title}\n{submission.selftext}",
+                    "entity_type": entity_type,
+                    "content": f"{post.title}\n{post.selftext}",
                     "source_type": "Reddit",
                     "is_user": False,
-                    "raw_url": f"https://reddit.com{submission.permalink}",
-                    "published_at": submission.created_utc
+                    "raw_url": f"https://reddit.com{post.permalink}",
+                    "published_at": post.created_utc,
+                    "discovery_depth": discovery_depth,
+                    "allow_discovery": allow_discovery
                 }
                 self.publish(payload)
         except Exception as e:
