@@ -4,6 +4,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from intelligence_api.presentation import router
+from intelligence_api.presentation.chat_router import chat_router
 from intelligence_api.core.config import settings
 from intelligence_api.scheduler import start_scheduler
 from intelligence_api.subscriber import start_subscriber
@@ -38,6 +39,7 @@ app.add_middleware(
 )
 
 app.include_router(router.router)
+app.include_router(chat_router)
 
 @app.get("/health")
 def health_check():

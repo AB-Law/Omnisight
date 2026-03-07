@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
 const navigation = [
+  { name: "AI Analyst", href: "/ai-analyst", icon: "smart_toy" },
   { name: "Global Intelligence", href: "/global-intelligence", icon: "public" },
   { name: "Companies", href: "/", icon: "business" },
   { name: "Topics", href: "/topic-analysis", icon: "analytics" },

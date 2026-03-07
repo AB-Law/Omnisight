@@ -5,6 +5,7 @@ pydantic
 pydantic-settings
 python-dotenv
 psutil
+sse-starlette
 
 # Database
 sqlalchemy
@@ -26,6 +27,8 @@ scipy
 # Scrapers
 praw
 feedparser
+ddgs
+trafilatura
 
 # Frontend & UI
 streamlit

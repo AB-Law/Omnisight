@@ -138,3 +138,36 @@ class EntityRelationship(Base):
         Index('ix_entity_relationships_a', 'entity_a_name'),
         Index('ix_entity_relationships_b', 'entity_b_name'),
     )
+
+
+# ──────────────── Chat / Conversation Tables ────────────────
+
+class ConversationSession(Base):
+    """A persistent chat session. One session = one conversation thread."""
+    __tablename__ = "conversation_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String(255), nullable=True)          # Auto-generated from first message
+    entity_focus = Column(String(255), nullable=True)   # Optional: primary entity the session is about
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ConversationMessage(Base):
+    """A single message within a conversation session."""
+    __tablename__ = "conversation_messages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("conversation_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)            # 'user' | 'assistant' | 'tool'
+    content = Column(Text, nullable=True)               # Text content (may be empty for pure tool messages)
+    tool_name = Column(String(100), nullable=True)      # Set when role='tool'
+    tool_call_id = Column(String(100), nullable=True)   # OpenAI tool_call_id for correlation
+    tool_args = Column(JSON, nullable=True)             # Arguments passed to the tool
+    tool_result = Column(JSON, nullable=True)           # Structured result from the tool (including viz data)
+    metadata_json = Column(JSON, default={})            # e.g. {"confidence": 0.94, "sources": [...]}
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index('ix_conversation_messages_session', 'session_id', 'created_at'),
+    )
