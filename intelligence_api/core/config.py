@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     REDDIT_CLIENT_ID: Optional[str] = os.getenv("REDDIT_CLIENT_ID")
     REDDIT_CLIENT_SECRET: Optional[str] = os.getenv("REDDIT_CLIENT_SECRET")
     NITTER_INSTANCE: str = os.getenv("NITTER_INSTANCE", "https://nitter.net")
+
+    # --- Auth ---
+    # Must match NEXTAUTH_SECRET in the Next.js frontend .env.local
+    NEXTAUTH_SECRET: str = os.getenv("NEXTAUTH_SECRET", "change-me-in-production")
+    # Allowed CORS origins (comma-separated for multiple)
+    ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
     
     model_config = {
         "env_file": ".env",

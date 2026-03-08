@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
 import { cn } from "@/lib/utils";
+import { fetchFromApi } from "@/lib/api";
 import { forceCollide } from "d3-force";
 
 // Load ForceGraph2D dynamically to avoid SSR issues
@@ -109,8 +110,7 @@ export default function KnowledgeGraph() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const res = await fetch("http://127.0.0.1:8000/knowledge-graph");
-        const json = await res.json();
+        const json = await fetchFromApi("/knowledge-graph");
         setData(json);
       } catch (err) {
         console.error("Failed to fetch knowledge graph:", err);
@@ -126,10 +126,8 @@ export default function KnowledgeGraph() {
       const fetchDetails = async () => {
         setLoadingDetails(true);
         try {
-          const res = await fetch(`http://127.0.0.1:8000/knowledge-graph/entity/${encodeURIComponent(selectedNode.id)}/details`);
-          if (res.ok) {
-            setNodeDetails(await res.json());
-          }
+          const details = await fetchFromApi(`/knowledge-graph/entity/${encodeURIComponent(selectedNode.id)}/details`);
+            setNodeDetails(details);
         } catch (e) {
           console.error("Failed to fetch node details", e);
         } finally {
@@ -149,10 +147,8 @@ export default function KnowledgeGraph() {
           const source = typeof selectedEdge.source === 'object' ? selectedEdge.source.id : selectedEdge.source;
           const target = typeof selectedEdge.target === 'object' ? selectedEdge.target.id : selectedEdge.target;
           
-          const res = await fetch(`http://127.0.0.1:8000/knowledge-graph/edge/details?source=${encodeURIComponent(source)}&target=${encodeURIComponent(target)}`);
-          if (res.ok) {
-            setEdgeDetails(await res.json());
-          }
+          const details = await fetchFromApi(`/knowledge-graph/edge/details?source=${encodeURIComponent(source)}&target=${encodeURIComponent(target)}`);
+          setEdgeDetails(details);
         } catch (e) {
              console.error("Failed to fetch edge details", e);
         } finally {

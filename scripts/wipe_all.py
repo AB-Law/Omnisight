@@ -19,12 +19,17 @@ def wipe_relational_db():
             tables = [
                 "entity_relationships",
                 "entity_mentions",
+                "scraped_events",
                 "events",
                 "daily_trends",
-                "entities",
+                "conversation_messages",
+                "conversation_sessions",
+                "user_target_subscriptions",
                 "scrape_targets",
+                "entities",
                 "ticker_mappings",
-                "stock_prices"
+                "stock_prices",
+                "users",
             ]
             
             for table in tables:

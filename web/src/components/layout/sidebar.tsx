@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useSession, signOut } from "next-auth/react";
 import { cn } from "@/lib/utils";
 
 const navigation = [
@@ -112,15 +113,61 @@ export function Sidebar() {
         </div>
       </nav>
 
-      <div className="p-4 border-t border-primary/10">
+      <div className="p-4 border-t border-primary/10 space-y-3">
         <button
           onClick={() => window.location.reload()}
-          className="w-full py-3 bg-primary hover:bg-primary/90 text-white rounded-xl font-bold text-sm shadow-lg shadow-primary/20 flex items-center justify-center gap-2 transition-all"
+          className="w-full py-2.5 bg-primary hover:bg-primary/90 text-white rounded-xl font-bold text-sm shadow-lg shadow-primary/20 flex items-center justify-center gap-2 transition-all"
         >
           <span className="material-symbols-outlined text-sm">refresh</span>
           Sync Terminal
         </button>
+
+        <UserPanel />
       </div>
     </aside>
+  );
+}
+
+function UserPanel() {
+  const { data: session, status } = useSession();
+
+  if (status === "loading") {
+    return <div className="h-10 rounded-xl bg-white/5 animate-pulse" />;
+  }
+
+  if (!session) return null;
+
+  const initials = session.user?.name
+    ?.split(" ")
+    .map((n) => n[0])
+    .slice(0, 2)
+    .join("") ?? "?";
+
+  return (
+    <div className="flex items-center gap-3 px-2 py-2 rounded-xl bg-white/5">
+      {session.user?.image ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={session.user.image}
+          alt={session.user.name ?? ""}
+          className="w-8 h-8 rounded-full object-cover shrink-0"
+        />
+      ) : (
+        <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-primary to-orange-700 flex items-center justify-center font-bold text-xs text-white shrink-0">
+          {initials}
+        </div>
+      )}
+      <div className="flex-1 min-w-0">
+        <p className="text-xs font-semibold text-white truncate">{session.user?.name}</p>
+        <p className="text-[10px] text-slate-500 truncate">{session.user?.email}</p>
+      </div>
+      <button
+        onClick={() => signOut({ callbackUrl: "/login" })}
+        title="Sign out"
+        className="shrink-0 p-1.5 rounded-lg text-slate-400 hover:text-primary hover:bg-primary/10 transition-colors"
+      >
+        <span className="material-symbols-outlined text-base">logout</span>
+      </button>
+    </div>
   );
 }

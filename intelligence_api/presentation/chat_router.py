@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from intelligence_api.core.database import get_db
+from intelligence_api.core.security import get_current_user
 from intelligence_api.domain.models import ConversationSession, ConversationMessage
 from intelligence_api.application.chat_service import ChatService
 
@@ -92,11 +93,16 @@ def _message_out(msg: ConversationMessage) -> dict:
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @chat_router.post("/sessions", status_code=201)
-def create_session(body: SessionCreateIn, db: Session = Depends(get_db)):
-    """Create a new conversation session."""
+def create_session(
+    body: SessionCreateIn,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new conversation session owned by the current user."""
     session = ConversationSession(
         title=body.title,
         entity_focus=body.entity_focus,
+        user_id=current_user.id,
     )
     db.add(session)
     db.commit()
@@ -105,8 +111,12 @@ def create_session(body: SessionCreateIn, db: Session = Depends(get_db)):
 
 
 @chat_router.get("/sessions")
-def list_sessions(limit: int = 20, db: Session = Depends(get_db)):
-    """List the most recent conversation sessions."""
+def list_sessions(
+    limit: int = 20,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List the most recent conversation sessions belonging to the current user."""
     from sqlalchemy import func as sa_func
 
     rows = (
@@ -118,6 +128,7 @@ def list_sessions(limit: int = 20, db: Session = Depends(get_db)):
             ConversationMessage,
             ConversationMessage.session_id == ConversationSession.id,
         )
+        .filter(ConversationSession.user_id == current_user.id)
         .group_by(ConversationSession.id)
         .order_by(ConversationSession.updated_at.desc())
         .limit(limit)
@@ -127,8 +138,12 @@ def list_sessions(limit: int = 20, db: Session = Depends(get_db)):
 
 
 @chat_router.get("/sessions/{session_id}")
-def get_session(session_id: str, db: Session = Depends(get_db)):
-    """Retrieve a session along with its full message history."""
+def get_session(
+    session_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Retrieve a session along with its full message history (must belong to current user)."""
     try:
         sid = uuid.UUID(session_id)
     except ValueError:
@@ -137,6 +152,8 @@ def get_session(session_id: str, db: Session = Depends(get_db)):
     session = db.query(ConversationSession).filter(ConversationSession.id == sid).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
 
     messages = (
         db.query(ConversationMessage)
@@ -154,6 +171,7 @@ def get_session(session_id: str, db: Session = Depends(get_db)):
 async def send_message(
     session_id: str,
     body: MessageIn,
+    current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
@@ -174,11 +192,13 @@ async def send_message(
     session = db.query(ConversationSession).filter(ConversationSession.id == sid).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
 
     if not body.content or not body.content.strip():
         raise HTTPException(status_code=422, detail="Message content cannot be empty")
 
-    service = ChatService(db)
+    service = ChatService(db, user_id=current_user.id)
 
     async def event_generator():
         try:
@@ -200,8 +220,12 @@ async def send_message(
 
 
 @chat_router.delete("/sessions/{session_id}", status_code=204)
-def delete_session(session_id: str, db: Session = Depends(get_db)):
-    """Delete a session and all its messages (CASCADE handled by FK)."""
+def delete_session(
+    session_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a session and all its messages (must belong to current user)."""
     try:
         sid = uuid.UUID(session_id)
     except ValueError:
@@ -210,14 +234,21 @@ def delete_session(session_id: str, db: Session = Depends(get_db)):
     session = db.query(ConversationSession).filter(ConversationSession.id == sid).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
 
     db.delete(session)
     db.commit()
 
 
 @chat_router.patch("/sessions/{session_id}/title")
-def update_session_title(session_id: str, body: SessionCreateIn, db: Session = Depends(get_db)):
-    """Update the session title (called after first message to auto-set a descriptive title)."""
+def update_session_title(
+    session_id: str,
+    body: SessionCreateIn,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update the session title (must belong to current user)."""
     try:
         sid = uuid.UUID(session_id)
     except ValueError:
@@ -226,6 +257,8 @@ def update_session_title(session_id: str, body: SessionCreateIn, db: Session = D
     session = db.query(ConversationSession).filter(ConversationSession.id == sid).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
 
     if body.title:
         session.title = body.title

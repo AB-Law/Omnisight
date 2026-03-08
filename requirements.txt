@@ -6,6 +6,7 @@ pydantic-settings
 python-dotenv
 psutil
 sse-starlette
+PyJWT>=2.8.0
 
 # Database
 sqlalchemy
@@ -28,6 +29,7 @@ scipy
 praw
 feedparser
 ddgs
+duckduckgo-search
 trafilatura
 
 # Frontend & UI

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
+import { fetchFromApi } from "@/lib/api";
 
 export default function PeopleWatch() {
   const [entities, setEntities] = useState<string[]>([]);
@@ -21,8 +22,7 @@ export default function PeopleWatch() {
   useEffect(() => {
     async function loadEntities() {
       try {
-         const res = await fetch("http://127.0.0.1:8000/dashboard/filters/entities?entity_type=PERSON");
-         const json = await res.json();
+         const json = await fetchFromApi("/dashboard/filters/entities?entity_type=PERSON");
          const filtered = json.filter((e: string) => e !== "All");
          setEntities(filtered);
          if (filtered.length > 0 && !selectedEntity) setSelectedEntity(filtered[0]);
@@ -39,13 +39,13 @@ export default function PeopleWatch() {
     setMgmtLoading(true);
     setIsModalOpen(true);
     try {
-        const [entRes, tgtRes] = await Promise.all([
-            fetch(`http://127.0.0.1:8000/entities/by-name/${selectedEntity}`),
-            fetch(`http://127.0.0.1:8000/targets/by-entity/${selectedEntity}`)
+        const [entJson, tgtJson] = await Promise.allSettled([
+            fetchFromApi(`/entities/by-name/${selectedEntity}`),
+            fetchFromApi(`/targets/by-entity/${selectedEntity}`),
         ]);
-        if (entRes.ok) setPersonInfo(await entRes.json());
-        if (tgtRes.ok) {
-            const tgt = await tgtRes.json();
+        if (entJson.status === "fulfilled") setPersonInfo(entJson.value);
+        if (tgtJson.status === "fulfilled") {
+            const tgt = tgtJson.value;
             setTargetInfo(tgt.target);
             if (tgt.target) {
                 setNewInterval(tgt.target.interval);
@@ -62,42 +62,35 @@ export default function PeopleWatch() {
   const handleUpdateSchedule = async () => {
     if (!targetInfo) return;
     try {
-        const res = await fetch(`http://127.0.0.1:8000/targets/${targetInfo.id}`, {
+        await fetchFromApi(`/targets/${targetInfo.id}`, {
             method: "PUT",
-            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ 
                 scrape_interval_minutes: newInterval,
-                scraper_params: { allow_discovery: allowDiscovery } 
-            })
+                scraper_params: { allow_discovery: allowDiscovery }, 
+            }),
         });
-        if (res.ok) {
-            alert("Schedule updated successfully");
-            setIsModalOpen(false);
-        }
+        alert("Schedule updated successfully");
+        setIsModalOpen(false);
     } catch (e) { alert("Failed to update schedule"); }
   };
 
   const handleStopJob = async () => {
     if (!targetInfo || !confirm("Stop this tracking job? All related intelligence data will be kept but no more scrapes will occur.")) return;
     try {
-        const res = await fetch(`http://127.0.0.1:8000/targets/${targetInfo.id}`, { method: "DELETE" });
-        if (res.ok) {
-            alert("Tracking job stopped.");
-            setIsModalOpen(false);
-            window.location.reload();
-        }
+        await fetchFromApi(`/targets/${targetInfo.id}`, { method: "DELETE" });
+        alert("Tracking job stopped.");
+        setIsModalOpen(false);
+        window.location.reload();
     } catch (e) { alert("Failed to stop job"); }
   };
 
   const handleDeletePerson = async () => {
     if (!personInfo || !confirm("Permanently delete this person and ALL their data/history? This cannot be undone.")) return;
     try {
-        const res = await fetch(`http://127.0.0.1:8000/entities/${personInfo.id}`, { method: "DELETE" });
-        if (res.ok) {
-            alert("Person deleted.");
-            setIsModalOpen(false);
-            window.location.reload();
-        }
+        await fetchFromApi(`/entities/${personInfo.id}`, { method: "DELETE" });
+        alert("Person deleted.");
+        setIsModalOpen(false);
+        window.location.reload();
     } catch (e) { alert("Failed to delete person"); }
   };
 
@@ -105,17 +98,17 @@ export default function PeopleWatch() {
       if (!selectedEntity) return;
       try {
         setAssociatedCompanies([]);
-        const [feedRes, detailsRes] = await Promise.all([
-          fetch(`http://127.0.0.1:8000/dashboard/data?filter_entity=${selectedEntity}&filter_type=PERSON`),
-          fetch(`http://127.0.0.1:8000/knowledge-graph/entity/${selectedEntity}/details`)
+        const [feedResult, detailsResult] = await Promise.allSettled([
+          fetchFromApi(`/dashboard/data?filter_entity=${selectedEntity}&filter_type=PERSON`),
+          fetchFromApi(`/knowledge-graph/entity/${selectedEntity}/details`),
         ]);
 
-        if (feedRes.ok) {
-           const feedJson = await feedRes.json();
-           setFeedData(feedJson.data || feedJson);
+        if (feedResult.status === "fulfilled") {
+           const feed = feedResult.value;
+           setFeedData(feed.data || feed);
         }
-        if (detailsRes.ok) {
-          const details = await detailsRes.json();
+        if (detailsResult.status === "fulfilled") {
+          const details = detailsResult.value;
           // Filter related for COMPANIES only, sort by co-mentions
           const companies = (details.related || []).filter((r: any) => r.type === "COMPANY").sort((a: any, b: any) => b.co_mentions - a.co_mentions);
           setAssociatedCompanies(companies);

@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from intelligence_api.core.database import get_db
+from intelligence_api.core.security import get_current_user
 from intelligence_api.application.processor import IntelligenceProcessor
 import httpx
 from fastapi.responses import Response
@@ -19,7 +20,7 @@ class EventIn(BaseModel):
     discovery_depth: int = 0
 
 @router.post("/process-event")
-async def process_event(event: EventIn, db: Session = Depends(get_db)):
+async def process_event(event: EventIn, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     try:
         processor = IntelligenceProcessor(db)
         result = await processor.process_event(event.dict())
@@ -41,33 +42,51 @@ class TargetUpdateIn(BaseModel):
     entity_type: Optional[str] = None
     
 @router.post("/targets")
-def create_target(target: TargetIn, db: Session = Depends(get_db)):
+def create_target(
+    target: TargetIn,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Subscribe the current user to track an entity+source.
+
+    If another user already tracks the same entity+source, the existing
+    ScrapeTarget is reused and the user is subscribed to it, gaining immediate
+    access to all historical events already collected.
+    """
+    from intelligence_api.application.subscription_service import subscribe_user_to_entity
     try:
-        from intelligence_api.domain.models import ScrapeTarget
-        from sqlalchemy.sql import func
-        new_target = ScrapeTarget(
-            target_name=target.target_name,
-            source_type=target.source_type,
-            scrape_interval_minutes=target.scrape_interval_minutes,
+        result = subscribe_user_to_entity(
+            db=db,
+            user=current_user,
+            entity_label=target.target_name,
+            entity_type=target.entity_type or "COMPANY",
+            sources=[target.source_type],
+            interval_minutes=target.scrape_interval_minutes,
             campaign=target.campaign,
-            metadata_json={**(target.scraper_params or {}), "entity_type": target.entity_type},
-            status="Pending",
-            next_scrape_at=func.now()
         )
-        db.add(new_target)
-        db.commit()
-        db.refresh(new_target)
-        return {"status": "success", "target_id": new_target.id}
+        return {
+            "status": "success",
+            "target_id": result["entity_id"],  # entity id as a stable reference
+            "existing_events": result["existing_events"],
+            "shared": len(result["subscribed_targets"]) == 0 and len(result["already_subscribed"]) > 0,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/targets")
-def get_targets(db: Session = Depends(get_db)):
-    from intelligence_api.domain.models import ScrapeTarget, Entity, ScrapedEvent
+def get_targets(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    from intelligence_api.domain.models import ScrapeTarget, Entity, ScrapedEvent, UserTargetSubscription
     from sqlalchemy import func
     from urllib.parse import urlparse
-    
-    targets = db.query(ScrapeTarget).order_by(ScrapeTarget.created_at.desc()).all()
+
+    # Return only the targets this user is subscribed to
+    targets = (
+        db.query(ScrapeTarget)
+        .join(UserTargetSubscription, UserTargetSubscription.scrape_target_id == ScrapeTarget.id)
+        .filter(UserTargetSubscription.user_id == current_user.id)
+        .order_by(ScrapeTarget.created_at.desc())
+        .all()
+    )
     
     results = []
     for t in targets:
@@ -116,7 +135,7 @@ def get_targets(db: Session = Depends(get_db)):
     return results
 
 @router.post("/targets/{target_id}/run")
-def run_target_now(target_id: str, db: Session = Depends(get_db)):
+def run_target_now(target_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     from intelligence_api.domain.models import ScrapeTarget
     from sqlalchemy.sql import func
     target = db.query(ScrapeTarget).filter(ScrapeTarget.id == target_id).first()
@@ -129,7 +148,7 @@ def run_target_now(target_id: str, db: Session = Depends(get_db)):
     return {"status": "success", "message": "Triggered target scrape"}
 
 @router.put("/targets/{target_id}")
-def update_target(target_id: str, payload: TargetUpdateIn, db: Session = Depends(get_db)):
+def update_target(target_id: str, payload: TargetUpdateIn, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Update a target's configuration (e.g., scrape interval)."""
     from intelligence_api.domain.models import ScrapeTarget
     import uuid
@@ -162,63 +181,79 @@ def update_target(target_id: str, payload: TargetUpdateIn, db: Session = Depends
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
 
 @router.delete("/targets/{target_id}")
-def delete_target(target_id: str, db: Session = Depends(get_db)):
-    """Delete a target and ALL related intelligence/market/graph data."""
-    from intelligence_api.domain.models import ScrapeTarget, Entity, ScrapedEvent, DailyTrend, TickerMapping, StockPrice, EntityMention, EntityRelationship
+def delete_target(target_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Unsubscribe the current user from a scrape target.
+
+    If this was the last subscription, the target and ALL associated intelligence
+    data are permanently deleted (same behaviour as before multi-user support).
+    If other users still subscribe, only the subscription row is removed and
+    the shared data is preserved.
+    """
+    from intelligence_api.domain.models import (
+        ScrapeTarget, Entity, ScrapedEvent, DailyTrend,
+        TickerMapping, StockPrice, EntityMention, EntityRelationship,
+        UserTargetSubscription,
+    )
+    from intelligence_api.application.subscription_service import unsubscribe_user_from_target
     from sqlalchemy import or_, func
     import uuid
-    
+
     try:
         try:
             target_uuid = uuid.UUID(target_id)
         except ValueError:
-             raise HTTPException(status_code=400, detail="Invalid target ID format")
+            raise HTTPException(status_code=400, detail="Invalid target ID format")
 
         target = db.query(ScrapeTarget).filter(ScrapeTarget.id == target_uuid).first()
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
-        
-        # 1. Find all entities matching this label (case-insensitive) to ensure full cleanup
+
+        result = unsubscribe_user_from_target(db, current_user, target_uuid)
+
+        if not result["deleted"]:
+            # Other users still subscribed — data is preserved.
+            return {"status": "success", "message": result["message"]}
+
+        # Last subscriber removed — perform full cleanup (original behaviour)
         normalized_name = target.target_name.strip().upper()
         entities = db.query(Entity).filter(func.upper(Entity.label) == normalized_name).all()
-        
+
         for entity in entities:
-            # 2. Delete Events and DailyTrends, Mentions
             db.query(ScrapedEvent).filter(ScrapedEvent.entity_id == entity.id).delete()
             db.query(DailyTrend).filter(DailyTrend.entity_id == entity.id).delete()
             db.query(EntityMention).filter(EntityMention.resolved_entity_id == entity.id).delete()
-            
-            # 3. Handle Relationships (both sides, case-insensitively)
             db.query(EntityRelationship).filter(or_(
                 func.upper(EntityRelationship.entity_a_name) == normalized_name,
-                func.upper(EntityRelationship.entity_b_name) == normalized_name
+                func.upper(EntityRelationship.entity_b_name) == normalized_name,
             )).delete()
 
-            # 4. Handle Market Data
-            mapping = db.query(TickerMapping).filter(func.upper(TickerMapping.company_name) == normalized_name).first()
+            mapping = db.query(TickerMapping).filter(
+                func.upper(TickerMapping.company_name) == normalized_name
+            ).first()
             if mapping:
                 if mapping.ticker_symbol:
-                    db.query(StockPrice).filter(StockPrice.ticker_symbol == mapping.ticker_symbol).delete()
+                    db.query(StockPrice).filter(
+                        StockPrice.ticker_symbol == mapping.ticker_symbol
+                    ).delete()
                 db.delete(mapping)
-            
-            # 5. Semantic Cache Wipe (Pinecone)
+
             try:
                 from intelligence_api.infrastructure.ai_service import SemanticCache
-                cache = SemanticCache()
-                # Use the exact entity label for Pinecone filtering
-                cache.delete_by_filter(filter_dict={"entity_label": entity.label})
-            except Exception as e:
+                SemanticCache().delete_by_filter(filter_dict={"entity_label": entity.label})
+            except Exception as exc:
                 import logging
-                logging.getLogger(__name__).warning(f"Could not delete from Pinecone for {entity.label}: {e}")
-            
-            # 6. Delete Entity
+                logging.getLogger(__name__).warning(
+                    f"Could not delete Pinecone vectors for {entity.label}: {exc}"
+                )
+
             db.delete(entity)
 
-        # 7. Finally delete the target itself
         db.delete(target)
         db.commit()
-        
-        return {"status": "success", "message": f"Deleted '{target.target_name}' and all associated intelligence data."}
+        return {
+            "status": "success",
+            "message": f"Deleted '{target.target_name}' and all associated intelligence data.",
+        }
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")
@@ -227,7 +262,7 @@ def delete_target(target_id: str, db: Session = Depends(get_db)):
 # ──────────────── Market Correlation Endpoints ────────────────
 
 @router.get("/targets/by-entity/{name}")
-def get_target_by_entity(name: str, db: Session = Depends(get_db)):
+def get_target_by_entity(name: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Fetch the active scrape target for a specific entity name."""
     from intelligence_api.domain.models import ScrapeTarget
     from sqlalchemy import func
@@ -247,7 +282,7 @@ def get_target_by_entity(name: str, db: Session = Depends(get_db)):
     }
 
 @router.get("/entities/by-name/{name}")
-def get_entity_by_name(name: str, db: Session = Depends(get_db)):
+def get_entity_by_name(name: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Fetch entity details by name."""
     from intelligence_api.domain.models import Entity
     from sqlalchemy import func
@@ -261,7 +296,7 @@ def get_entity_by_name(name: str, db: Session = Depends(get_db)):
     }
 
 @router.delete("/entities/{entity_id}")
-def delete_entity(entity_id: str, db: Session = Depends(get_db)):
+def delete_entity(entity_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Deep delete an entity and all its data."""
     from intelligence_api.domain.models import Entity, ScrapedEvent, DailyTrend, EntityMention, EntityRelationship, ScrapeTarget
     import uuid
@@ -304,7 +339,7 @@ def delete_entity(entity_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/market/ticker/{entity_label}")
-def get_ticker(entity_label: str, db: Session = Depends(get_db)):
+def get_ticker(entity_label: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Resolve and cache a ticker symbol for a company entity."""
     from intelligence_api.infrastructure.market_data import MarketDataService, TickerResolutionError
     try:
@@ -329,7 +364,7 @@ def get_ticker(entity_label: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/market/correlation/{entity_label}")
-def get_correlation(entity_label: str, days: int = 90, db: Session = Depends(get_db)):
+def get_correlation(entity_label: str, days: int = 90, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Return aligned sentiment + stock price data with signal strength score.
     Query params: ?days=90
@@ -348,7 +383,7 @@ def get_correlation(entity_label: str, days: int = 90, db: Session = Depends(get
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/market/refresh/{entity_label}")
-def refresh_stock_data(entity_label: str, db: Session = Depends(get_db)):
+def refresh_stock_data(entity_label: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Force-refresh stock price data for an entity's ticker."""
     from intelligence_api.infrastructure.market_data import MarketDataService, TickerResolutionError
     from intelligence_api.domain.models import StockPrice
@@ -372,7 +407,7 @@ def refresh_stock_data(entity_label: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/market/sector-heatmap")
-def get_sector_heatmap(db: Session = Depends(get_db)):
+def get_sector_heatmap(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Get sector-grouped sentiment data for heatmap visualization."""
     from intelligence_api.application.correlation import get_sector_heatmap_data
     try:
@@ -384,7 +419,7 @@ def get_sector_heatmap(db: Session = Depends(get_db)):
 from fastapi.responses import Response
 
 @router.get("/market/export/{entity_label}")
-def export_analysis_pdf(entity_label: str, db: Session = Depends(get_db)):
+def export_analysis_pdf(entity_label: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Export the correlation and intelligence data for an entity as a PDF."""
     from intelligence_api.application.correlation import CorrelationEngine
     from reporting.pdf_generator import generate_pdf
@@ -457,8 +492,9 @@ def get_knowledge_graph(
     entity: Optional[str] = None,
     min_co_occurrences: int = 2,
     days: int = 30,
-    entity_types: Optional[str] = None, # comma separated
-    db: Session = Depends(get_db)
+    entity_types: Optional[str] = None,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Returns nodes and edges for the Knowledge Graph visualization.
@@ -582,7 +618,7 @@ def get_knowledge_graph(
     }
 
 @router.get("/knowledge-graph/entity/{name}/details")
-def get_entity_graph_details(name: str, db: Session = Depends(get_db)):
+def get_entity_graph_details(name: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Fetch recent co-mentions and details for a specific entity."""
     from intelligence_api.domain.models import EntityRelationship, EntityMention, ScrapedEvent, Entity
     from sqlalchemy import or_, desc, func
@@ -652,7 +688,7 @@ def get_entity_graph_details(name: str, db: Session = Depends(get_db)):
     }
 
 @router.get("/knowledge-graph/edge/details")
-def get_edge_details(source: str, target: str, limit: int = 5, db: Session = Depends(get_db)):
+def get_edge_details(source: str, target: str, limit: int = 5, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Fetch recent articles (events) that mention both 'source' and 'target' entities."""
     from intelligence_api.domain.models import EntityMention, ScrapedEvent, Entity
     from sqlalchemy import text, desc
@@ -729,7 +765,8 @@ def get_dashboard_data(
     max_sentiment: float = 1.0,
     limit: int = 20,
     page: int = 1,
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Unified endpoint to fetch dashboard event data securely without raw SQL.
@@ -825,7 +862,7 @@ def get_system_status():
 
 
 @router.get("/dashboard/filters/entities")
-def get_filter_entities(entity_type: Optional[str] = None, db: Session = Depends(get_db)):
+def get_filter_entities(entity_type: Optional[str] = None, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Fetch distinct entity names for dropdowns, optionally filtered by type."""
     from intelligence_api.domain.models import Entity
     query = db.query(Entity.label).filter(Entity.label != None)
@@ -835,14 +872,14 @@ def get_filter_entities(entity_type: Optional[str] = None, db: Session = Depends
     return ["All"] + [e[0] for e in entities if e[0]]
 
 @router.get("/dashboard/filters/categories")
-def get_filter_categories(db: Session = Depends(get_db)):
+def get_filter_categories(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Fetch distinct event categories for dropdowns."""
     from intelligence_api.domain.models import ScrapedEvent
     cats = db.query(ScrapedEvent.category).filter(ScrapedEvent.category != None).distinct().all()
     return ["All"] + [c[0] for c in cats if c[0]]
 
 @router.get("/dashboard/filters/campaigns")
-def get_filter_campaigns(db: Session = Depends(get_db)):
+def get_filter_campaigns(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Fetch distinct existing campaigns for dropdowns."""
     from intelligence_api.domain.models import ScrapeTarget
     camps = db.query(ScrapeTarget.campaign).filter(ScrapeTarget.campaign != None).distinct().all()

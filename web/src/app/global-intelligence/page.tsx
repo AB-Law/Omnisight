@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { fetchFromApi } from "@/lib/api";
 
 export default function Home() {
   const [data, setData] = useState<any[]>([]);
@@ -15,8 +16,7 @@ export default function Home() {
     const fetchData = async () => {
       if (page > 1) setLoadingMore(true);
       try {
-        const res = await fetch(`http://127.0.0.1:8000/dashboard/data?limit=20&page=${page}`);
-        const json = await res.json();
+        const json = await fetchFromApi(`/dashboard/data?limit=20&page=${page}`);
         const incomingData = json.data || json; // Handle backward compatibility
         
         if (page === 1) {

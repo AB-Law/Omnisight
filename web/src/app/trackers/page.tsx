@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { fetchFromApi } from "@/lib/api";
 
 export default function Trackers() {
   const [trackers, setTrackers] = useState<any[]>([]);
@@ -20,8 +21,7 @@ export default function Trackers() {
 
   const fetchSystemStatus = async () => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/system/status");
-      const json = await res.json();
+      const json = await fetchFromApi("/system/status");
       setSystemStatus(json);
     } catch (err) {
       console.error("Failed to fetch system status:", err);
@@ -30,8 +30,7 @@ export default function Trackers() {
 
   const fetchTrackers = async () => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/targets");
-      const json = await res.json();
+      const json = await fetchFromApi("/targets");
       setTrackers(json);
     } catch (err) {
       console.error("Failed to fetch trackers:", err);
@@ -44,21 +43,18 @@ export default function Trackers() {
     if (!formData.name) return;
     setCreating(true);
     try {
-      const res = await fetch("http://127.0.0.1:8000/targets", {
+      await fetchFromApi("/targets", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           target_name: formData.name,
-          source_type: formData.source, 
-          entity_type: formData.type, // Explicitly pass type
-          scrape_interval_minutes: formData.interval,  
-          campaign: "General Monitoring"
-        })
+          source_type: formData.source,
+          entity_type: formData.type,
+          scrape_interval_minutes: formData.interval,
+          campaign: "General Monitoring",
+        }),
       });
-      if (res.ok) {
-          setFormData({ name: "", type: "COMPANY", source: "Global News", interval: 60 });
-          fetchTrackers();
-      }
+      setFormData({ name: "", type: "COMPANY", source: "Global News", interval: 60 });
+      fetchTrackers();
     } catch (err) {
       console.error("Failed to create tracker:", err);
     } finally {
@@ -68,8 +64,8 @@ export default function Trackers() {
 
   const deleteTracker = async (id: string) => {
     try {
-      const res = await fetch(`http://127.0.0.1:8000/targets/${id}`, { method: "DELETE" });
-      if (res.ok) fetchTrackers();
+      await fetchFromApi(`/targets/${id}`, { method: "DELETE" });
+      fetchTrackers();
     } catch (err) {
       console.error("Failed to delete tracker:", err);
     }

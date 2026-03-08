@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { fetchFromApi } from "@/lib/api";
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   AreaChart, Area 
@@ -29,12 +30,10 @@ export default function EntityIntelligenceHub() {
   useEffect(() => {
     async function loadInitData() {
       try {
-         const [entRes, heatRes] = await Promise.all([
-             fetch("http://127.0.0.1:8000/dashboard/filters/entities?entity_type=COMPANY"),
-             fetch("http://127.0.0.1:8000/market/sector-heatmap")
+         const [entJson, heatJson] = await Promise.all([
+             fetchFromApi("/dashboard/filters/entities?entity_type=COMPANY"),
+             fetchFromApi("/market/sector-heatmap"),
          ]);
-         const entJson = await entRes.json();
-         const heatJson = await heatRes.json();
          
          const validEntities = entJson.filter((e: string) => e !== "All");
          setEntities(validEntities);
@@ -61,21 +60,18 @@ export default function EntityIntelligenceHub() {
     if (!entityName) return;
     setAnalyzing(true);
     try {
-        const [corrRes, feedRes, netRes] = await Promise.all([
-             fetch(`http://127.0.0.1:8000/market/correlation/${entityName}?days=90`),
-             fetch(`http://127.0.0.1:8000/dashboard/data?filter_entity=${entityName}&filter_type=COMPANY`),
-             fetch(`http://127.0.0.1:8000/knowledge-graph/entity/${entityName}/details`)
+        const [corrJson, feedJson, netJson] = await Promise.allSettled([
+             fetchFromApi(`/market/correlation/${entityName}?days=90`),
+             fetchFromApi(`/dashboard/data?filter_entity=${entityName}&filter_type=COMPANY`),
+             fetchFromApi(`/knowledge-graph/entity/${entityName}/details`),
         ]);
         
-        if (corrRes.ok) setCorrelationData(await corrRes.json());
-        if (feedRes.ok) {
-            const feedJson = await feedRes.json();
-            setFeedData(feedJson.data || feedJson);
+        if (corrJson.status === "fulfilled") setCorrelationData(corrJson.value);
+        if (feedJson.status === "fulfilled") {
+            const feed = feedJson.value;
+            setFeedData(feed.data || feed);
         }
-        if (netRes.ok) {
-            const netJson = await netRes.json();
-            setNetworkData(netJson.top_connections || []);
-        }
+        if (netJson.status === "fulfilled") setNetworkData(netJson.value.top_connections || []);
     } catch (err) {
         console.error("Analysis error", err);
     } finally {
@@ -89,26 +85,22 @@ export default function EntityIntelligenceHub() {
 
   const loadEntityTrackers = async () => {
     try {
-        const res = await fetch("http://127.0.0.1:8000/targets");
-        if (res.ok) {
-           const data = await res.json();
+        const data = await fetchFromApi("/targets");
            const filtered = data.filter((t: any) => t.target_name.toLowerCase() === selectedEntity.toLowerCase());
            setEntityTrackers(filtered);
-        }
     } catch(e) { console.error(e) }
   };
 
   const updateTrackerInterval = async (id: string, newInterval: number) => {
       setSettingsSaving(true);
       try {
-          await fetch(`http://127.0.0.1:8000/targets/${id}`, {
+          await fetchFromApi(`/targets/${id}`, {
               method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                  target_name: selectedEntity, // Required by TargetIn, though we don't change it here
-                  source_type: "Any", // Required by schema
-                  scrape_interval_minutes: newInterval
-              })
+                  target_name: selectedEntity,
+                  source_type: "Any",
+                  scrape_interval_minutes: newInterval,
+              }),
           });
           await loadEntityTrackers();
       } catch (e) {
@@ -122,25 +114,22 @@ export default function EntityIntelligenceHub() {
       if (!selectedEntity || deepDiveStatus === "scanning") return;
       setDeepDiveStatus("scanning");
       try {
-          const res = await fetch(`http://127.0.0.1:8000/targets/by-entity/${selectedEntity}`);
-          if (res.ok) {
-              const data = await res.json();
+          const data = await fetchFromApi(`/targets/by-entity/${selectedEntity}`);
               if (data.target && data.target.id) {
-                  const runRes = await fetch(`http://127.0.0.1:8000/targets/${data.target.id}/run`, { method: "POST" });
-                  if (runRes.ok) {
+                  try {
+                      await fetchFromApi(`/targets/${data.target.id}/run`, { method: "POST" });
                       setTimeout(() => {
                           setDeepDiveStatus("complete");
                           runAnalysis(selectedEntity);
                           setTimeout(() => setDeepDiveStatus("idle"), 3000);
                       }, 1500);
-                  } else {
+                  } catch {
                       setDeepDiveStatus("idle");
                   }
               } else {
                   console.warn("No target found for deep dive.");
                   setDeepDiveStatus("idle");
               }
-          }
       } catch (err) {
           console.error(err);
           setDeepDiveStatus("idle");

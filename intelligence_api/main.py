@@ -32,10 +32,10 @@ app = FastAPI(title="Omnisight Intelligence API", lifespan=lifespan)
 # Add CORS middleware to allow the UI to communicate with the API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins for development
+    allow_origins=[o.strip() for o in settings.ALLOWED_ORIGINS.split(",")],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(router.router)

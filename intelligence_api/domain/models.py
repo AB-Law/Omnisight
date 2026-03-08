@@ -6,6 +6,42 @@ from sqlalchemy.sql import func
 
 Base = declarative_base()
 
+
+# ──────────────── User & Auth Tables ────────────────
+
+class User(Base):
+    """Authenticated user (Google OAuth via NextAuth)."""
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    google_sub = Column(String(255), unique=True, nullable=False, index=True)  # Google subject ID
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=True)
+    picture_url = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class UserTargetSubscription(Base):
+    """Many-to-many: which users are subscribed to which scrape targets.
+
+    A ScrapeTarget is shared infrastructure. Multiple users can subscribe to
+    the same target (entity + source combo). Historical data is immediately
+    available to any new subscriber because events are linked to Entity, not User.
+    The ScrapeTarget is only deleted when the last subscriber unsubscribes.
+    """
+    __tablename__ = "user_target_subscriptions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    scrape_target_id = Column(UUID(as_uuid=True), ForeignKey("scrape_targets.id", ondelete="CASCADE"), nullable=False, index=True)
+    subscribed_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "scrape_target_id", name="uq_user_target_subscription"),
+    )
+
+
 class Entity(Base):
     __tablename__ = "entities"
     
@@ -31,6 +67,8 @@ class ScrapedEvent(Base):
     category = Column(String(100))
     raw_url = Column(Text)
     published_at = Column(DateTime(timezone=True))
+    # 'public' = any subscriber can see; 'private' = only owner (reserved for future private API sources)
+    visibility = Column(String(20), nullable=False, server_default="public")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class DailyTrend(Base):
@@ -56,6 +94,9 @@ class ScrapeTarget(Base):
     
     metadata_json = Column(JSON, default={}, nullable=True) # For scraper-specific params like 'period'
     
+    # Audit: who originally created this target (nullable for legacy/auto-discovered targets)
+    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
     last_scraped_at = Column(DateTime(timezone=True), nullable=True)
     next_scrape_at = Column(DateTime(timezone=True), server_default=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -149,6 +190,8 @@ class ConversationSession(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String(255), nullable=True)          # Auto-generated from first message
     entity_focus = Column(String(255), nullable=True)   # Optional: primary entity the session is about
+    # Nullable for legacy/anonymous sessions (pre-auth migration)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

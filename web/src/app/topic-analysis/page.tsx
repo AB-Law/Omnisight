@@ -6,6 +6,7 @@ import {
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { cn } from "@/lib/utils";
+import { fetchFromApi } from "@/lib/api";
 
 export default function TopicAnalysis() {
   const [data, setData] = useState<any[]>([]);
@@ -14,8 +15,7 @@ export default function TopicAnalysis() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const res = await fetch("http://127.0.0.1:8000/dashboard/data?limit=1000");
-        const json = await res.json();
+        const json = await fetchFromApi("/dashboard/data?limit=1000");
         setData(json.data || json);
       } catch (err) {
         console.error("Failed to fetch dashboard data:", err);

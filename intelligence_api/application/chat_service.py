@@ -677,8 +677,10 @@ Operating instructions:
 - Be precise and concise. Use analyst terminology (bearish/bullish, signal strength, correlation, etc.).
 - When you generate a chart or graph, briefly describe what it shows and the key takeaways.
 - Cite sources and confidence levels when available.
-- If get_entity_intelligence returns 'not found', do NOT automatically call add_entity_tracker. \
-Instead, reply to the user explaining the entity is not tracked, then ask: \
+- If get_entity_intelligence returns 'not found', FIRST call web_search to research the entity \
+(e.g. "What is [entity]? company industry overview"). Use the search results to determine the entity type \
+(COMPANY, PERSON, or TOPIC), its sector/industry, and provide a brief factual summary to the user. \
+THEN offer to add it to the tracking system: \
 "Would you like me to add **[entity]** to the tracking system? If so, which sources would you prefer?" \
 Present the options as a short list: 1) Google News  2) Reddit Subreddit  3) Nitter/X User (pick any combination). \
 Also ask: "How often should I check? (every 15 min / 30 min / 60 min / 3 hours / 12 hours / 24 hours)". \
@@ -705,9 +707,10 @@ The frontend renders the complete dataset; your role is to introduce the table b
 # ─────────────────────────────────────────────────────────
 
 class ChatService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, user_id=None):
         self.db = db
         self.ai = AIClient()
+        self.user_id = user_id  # uuid.UUID | None — None for unauthenticated/legacy
 
     # ── Tool handlers ──────────────────────────────────────
 
@@ -1098,73 +1101,103 @@ class ChatService:
         sources: Optional[List[str]] = None,
         interval_minutes: int = 60,
     ) -> Dict[str, Any]:
-        """Create an Entity + ScrapeTarget rows so Omnisight starts collecting intelligence."""
-        # Normalise inputs
+        """Subscribe the current user to track entity + create ScrapeTargets if needed."""
+        from intelligence_api.application.subscription_service import subscribe_user_to_entity
+        from intelligence_api.domain.models import User
+
         entity_name = entity_name.strip()
         entity_type = entity_type.upper() if entity_type else "COMPANY"
         sources = sources or ["Google News", "Reddit Subreddit"]
         interval_minutes = max(15, int(interval_minutes))
 
-        # Check if entity already exists
-        existing = (
-            self.db.query(Entity)
-            .filter(Entity.label.ilike(entity_name))
-            .first()
-        )
-        if existing:
+        # Resolve the User object if we have a user_id
+        user = None
+        if self.user_id is not None:
+            user = self.db.query(User).filter(User.id == self.user_id).first()
+
+        if user is None:
+            # Fallback: legacy unauthenticated path (create entity + targets without subscription)
+            existing = (
+                self.db.query(Entity)
+                .filter(Entity.label.ilike(entity_name))
+                .first()
+            )
+            if existing:
+                return {
+                    "viz": {
+                        "type": "tracker_added",
+                        "data": {
+                            "entity_name": existing.label,
+                            "entity_type": existing.type,
+                            "sector": existing.sector,
+                            "sources": sources,
+                            "interval_minutes": interval_minutes,
+                            "already_existed": True,
+                        },
+                    },
+                    "sources": [entity_name],
+                }
+            new_entity = Entity(label=entity_name, type=entity_type, sector=sector, is_pii=False)
+            self.db.add(new_entity)
+            self.db.flush()
+            from sqlalchemy.sql import func as sqlfunc
+            created_targets = []
+            for source in sources:
+                target = ScrapeTarget(
+                    target_name=entity_name,
+                    source_type=source,  # preserve original casing for scheduler matching
+                    scrape_interval_minutes=interval_minutes,
+                    campaign="Chat-Added",
+                    status="Pending",
+                    metadata_json={"entity_type": entity_type},
+                    next_scrape_at=sqlfunc.now(),
+                )
+                self.db.add(target)
+                created_targets.append(source.upper())
+            self.db.commit()
             return {
                 "viz": {
                     "type": "tracker_added",
                     "data": {
-                        "entity_name": existing.label,
-                        "entity_type": existing.type,
-                        "sector": existing.sector,
-                        "sources": sources,
+                        "entity_name": entity_name,
+                        "entity_type": entity_type,
+                        "sector": sector,
+                        "sources": created_targets,
                         "interval_minutes": interval_minutes,
-                        "already_existed": True,
+                        "already_existed": False,
                     },
                 },
                 "sources": [entity_name],
             }
 
-        # Create Entity record
-        new_entity = Entity(
-            label=entity_name,
-            type=entity_type,
-            sector=sector,
-            is_pii=False,
+        # Authenticated path: use subscription service
+        result = subscribe_user_to_entity(
+            db=self.db,
+            user=user,
+            entity_label=entity_name,
+            entity_type=entity_type,
+            sources=sources,
+            interval_minutes=interval_minutes,
+            campaign="Chat-Added",
         )
-        self.db.add(new_entity)
-        self.db.flush()  # get id without committing yet
+        if sector:
+            entity = self.db.query(Entity).filter(Entity.id == result["entity_id"]).first()
+            if entity and not entity.sector:
+                entity.sector = sector
+                self.db.commit()
 
-        # Create one ScrapeTarget per requested source
-        from sqlalchemy.sql import func as sqlfunc
-        created_targets = []
-        for source in sources:
-            target = ScrapeTarget(
-                target_name=entity_name,
-                source_type=source.upper(),
-                scrape_interval_minutes=interval_minutes,
-                campaign="Chat-Added",
-                status="Pending",
-                metadata_json={"entity_type": entity_type},
-                next_scrape_at=sqlfunc.now(),
-            )
-            self.db.add(target)
-            created_targets.append(source.upper())
-
-        self.db.commit()
-
+        already_existed = len(result["created_targets"]) == 0
         return {
             "viz": {
                 "type": "tracker_added",
                 "data": {
-                    "entity_name": entity_name,
-                    "entity_type": entity_type,
+                    "entity_name": result["entity_label"],
+                    "entity_type": result["entity_type"],
                     "sector": sector,
-                    "sources": created_targets,
+                    "sources": sources,
                     "interval_minutes": interval_minutes,
-                    "already_existed": False,
+                    "already_existed": already_existed,
+                    "existing_events": result["existing_events"],
                 },
             },
             "sources": [entity_name],
@@ -1565,8 +1598,14 @@ class ChatService:
     # ── Category C: Tracker & Pipeline Management ──────────────────────────
 
     def _tool_list_trackers(self, status_filter: str = "all") -> Dict[str, Any]:
-        """List all scrape targets with status and recent event counts."""
+        """List scrape targets the current user subscribes to, with status and recent event counts."""
+        from intelligence_api.domain.models import UserTargetSubscription
         q = self.db.query(ScrapeTarget)
+        if self.user_id is not None:
+            q = q.join(
+                UserTargetSubscription,
+                UserTargetSubscription.scrape_target_id == ScrapeTarget.id,
+            ).filter(UserTargetSubscription.user_id == self.user_id)
         if status_filter and status_filter.lower() not in ("all", ""):
             q = q.filter(ScrapeTarget.status.ilike(status_filter))
         targets = q.order_by(ScrapeTarget.status, ScrapeTarget.target_name).all()
@@ -2207,10 +2246,15 @@ class ChatService:
         return msg
 
     def _build_system_prompt(self) -> str:
-        entity_labels = [
-            e.label
-            for e in self.db.query(Entity.label).limit(50).all()
-        ]
+        if self.user_id is not None:
+            # Scope entity list to what the current user subscribes to
+            from intelligence_api.application.subscription_service import get_user_entity_labels
+            entity_labels = get_user_entity_labels(self.db, self.user_id)
+        else:
+            entity_labels = [
+                e.label
+                for e in self.db.query(Entity.label).limit(50).all()
+            ]
         entity_list = ", ".join(entity_labels) if entity_labels else "none tracked yet"
         return _SYSTEM_PROMPT.format(
             today=date.today().isoformat(),
