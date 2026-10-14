@@ -1,6 +1,6 @@
 # Omnisight
 
-Production-grade automated OSINT platform tracking Companies and Usernames across public web sources.
+Automated OSINT platform tracking Companies and Usernames across public web sources.
 
 ## Tech Stack
 - **Backend**: Python (FastAPI)
